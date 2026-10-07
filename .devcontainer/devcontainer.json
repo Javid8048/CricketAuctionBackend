@@ -1,0 +1,14 @@
+{
+  "name": "Cricket Auction Arena Backend",
+  "image": "mcr.microsoft.com/devcontainers/typescript-node:20",
+  "forwardPorts": [5000],
+  "postCreateCommand": "npm install && npx prisma db push && npx ts-node prisma/seed.ts && npm run build",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "Prisma.prisma",
+        "dbaeumer.vscode-eslint"
+      ]
+    }
+  }
+}
