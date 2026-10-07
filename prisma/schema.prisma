@@ -1,0 +1,153 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      String   @default("TEAM") // ADMIN, TEAM, SPECTATOR
+  teamId    String?  @unique
+  team      Team?    @relation(fields: [teamId], references: [id], onDelete: SetNull)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model Team {
+  id              String       @id @default(uuid())
+  name            String       @unique
+  shortName       String
+  primaryColor    String       @default("#3B82F6")
+  secondaryColor  String       @default("#1E40AF")
+  logoText        String
+  totalPurse      Float        @default(1000000000) // ₹100 Cr in Rupee value (100,00,00,000)
+  remainingPurse  Float        @default(1000000000)
+  maxSquadSize    Int          @default(25)
+  maxOverseas     Int          @default(8)
+  user            User?
+  squad           TeamPlayer[]
+  bids            Bid[]
+  wonAuctions     AuctionPlayer[] @relation("WinningTeam")
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+}
+
+model Player {
+  id             String          @id @default(uuid())
+  name           String
+  profileImage   String
+  country        String
+  isOverseas     Boolean         @default(false)
+  age            Int
+  role           String          // Batter, Bowler, All-Rounder, Wicketkeeper
+  battingStyle   String          // Right-hand bat, Left-hand bat
+  bowlingStyle   String          // Right-arm fast, Right-arm offbreak, Left-arm orthodox, etc.
+  basePrice      Float           // In Rupee value
+  category       String          // Marquee, Capped, Uncapped, Emerging
+  matches        Int             @default(0)
+  runs           Int             @default(0)
+  battingAvg     Float           @default(0)
+  strikeRate     Float           @default(0)
+  highestScore   Int             @default(0)
+  wickets        Int             @default(0)
+  economy        Float           @default(0)
+  bowlingAvg     Float           @default(0)
+  bestBowling    String          @default("0/0")
+  status         String          @default("UPCOMING") // UPCOMING, IN_AUCTION, SOLD, UNSOLD
+  currentPrice   Float?
+  teamPlayer     TeamPlayer?
+  auctionPlayers AuctionPlayer[]
+  bids           Bid[]
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+}
+
+model Auction {
+  id                String          @id @default(uuid())
+  name              String          @default("Mega Auction 2026")
+  status            String          @default("IDLE") // IDLE, ACTIVE, PAUSED, COMPLETED
+  currentRound      Int             @default(1)
+  defaultTimerSec   Int             @default(10)
+  activePlayerId    String?
+  activePlayerPrice Float?
+  highestBidTeamId  String?
+  timerSecondsLeft  Int?
+  timerExpiresAt    DateTime?
+  startedAt         DateTime?
+  endedAt           DateTime?
+  auctionPlayers    AuctionPlayer[]
+  bids              Bid[]
+  events            AuctionEvent[]
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+}
+
+model AuctionPlayer {
+  id            String    @id @default(uuid())
+  auctionId     String
+  auction       Auction   @relation(fields: [auctionId], references: [id], onDelete: Cascade)
+  playerId      String
+  player        Player    @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  status        String    @default("PENDING") // PENDING, CURRENT, SOLD, UNSOLD, SKIPPED
+  round         Int       @default(1)
+  orderIndex    Int       @default(0)
+  basePrice     Float
+  finalPrice    Float?
+  winningTeamId String?
+  winningTeam   Team?     @relation("WinningTeam", fields: [winningTeamId], references: [id], onDelete: SetNull)
+  startedAt     DateTime?
+  soldAt        DateTime?
+  bids          Bid[]
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@unique([auctionId, playerId, round])
+}
+
+model Bid {
+  id              String         @id @default(uuid())
+  auctionId       String
+  auction         Auction        @relation(fields: [auctionId], references: [id], onDelete: Cascade)
+  auctionPlayerId String?
+  auctionPlayer   AuctionPlayer? @relation(fields: [auctionPlayerId], references: [id], onDelete: SetNull)
+  playerId        String
+  player          Player         @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  teamId          String
+  team            Team           @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  amount          Float
+  bidNumber       Int
+  createdAt       DateTime       @default(now())
+
+  @@index([auctionId, playerId])
+  @@index([teamId])
+}
+
+model TeamPlayer {
+  id        String   @id @default(uuid())
+  teamId    String
+  team      Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  playerId  String   @unique
+  player    Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  price     Float
+  acquiredAt DateTime @default(now())
+
+  @@index([teamId])
+}
+
+model AuctionEvent {
+  id        String   @id @default(uuid())
+  auctionId String
+  auction   Auction  @relation(fields: [auctionId], references: [id], onDelete: Cascade)
+  type      String   // STARTED, PAUSED, RESUMED, PLAYER_UP, BID_PLACED, TIMER_RESET, SOLD, UNSOLD, SKIPPED, RESET
+  message   String
+  metadata  String?  // JSON string
+  createdAt DateTime @default(now())
+
+  @@index([auctionId])
+}

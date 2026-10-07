@@ -1,0 +1,202 @@
+import { Request, Response } from 'express';
+import { PrismaClient } from '@prisma/client';
+import { AuctionEngine } from '../services/auction-engine.service';
+import { AuthenticatedRequest } from '../middleware/auth.middleware';
+
+const prisma = new PrismaClient();
+export const auctionEngine = new AuctionEngine(prisma);
+
+export async function getCurrentAuction(req: Request, res: Response) {
+  try {
+    const state = await auctionEngine.getAuctionState();
+    if (!state) {
+      return res.status(404).json({ error: 'No auction found.' });
+    }
+    res.json(state);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to fetch auction state.' });
+  }
+}
+
+export async function startAuction(req: AuthenticatedRequest, res: Response) {
+  try {
+    const state = await auctionEngine.startAuction();
+    res.json(state);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to start auction.' });
+  }
+}
+
+export async function pauseAuction(req: AuthenticatedRequest, res: Response) {
+  try {
+    const state = await auctionEngine.pauseAuction();
+    res.json(state);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to pause auction.' });
+  }
+}
+
+export async function resumeAuction(req: AuthenticatedRequest, res: Response) {
+  try {
+    const state = await auctionEngine.resumeAuction();
+    res.json(state);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to resume auction.' });
+  }
+}
+
+export async function selectPlayer(req: AuthenticatedRequest, res: Response) {
+  try {
+    const { playerId } = req.body;
+    if (!playerId) {
+      return res.status(400).json({ error: 'playerId is required.' });
+    }
+    const state = await auctionEngine.selectPlayer(playerId);
+    res.json(state);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to select player.' });
+  }
+}
+
+export async function startBidding(req: AuthenticatedRequest, res: Response) {
+  try {
+    const state = await auctionEngine.startBidding();
+    res.json(state);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to start bidding.' });
+  }
+}
+
+export async function nextPlayer(req: AuthenticatedRequest, res: Response) {
+  try {
+    const state = await auctionEngine.nextPlayer();
+    res.json(state);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to advance player.' });
+  }
+}
+
+export async function placeBid(req: AuthenticatedRequest, res: Response) {
+  try {
+    // If authenticated as TEAM, get teamId from token or allow body for testing
+    let teamId = req.user?.teamId;
+    if (!teamId && req.body.teamId && req.user?.role === 'ADMIN') {
+      // Admin can test bid on behalf of team if provided
+      teamId = req.body.teamId;
+    }
+
+    if (!teamId) {
+      return res.status(400).json({ error: 'Team ID is required to place a bid.' });
+    }
+
+    const { amount } = req.body;
+    const result = await auctionEngine.placeBid(teamId, amount ? Number(amount) : undefined);
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to place bid.' });
+  }
+}
+
+export async function sellPlayer(req: AuthenticatedRequest, res: Response) {
+  try {
+    const result = await auctionEngine.sellPlayer();
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to sell player.' });
+  }
+}
+
+export async function markUnsold(req: AuthenticatedRequest, res: Response) {
+  try {
+    const result = await auctionEngine.markUnsold();
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to mark unsold.' });
+  }
+}
+
+export async function skipPlayer(req: AuthenticatedRequest, res: Response) {
+  try {
+    const result = await auctionEngine.skipPlayer();
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to skip player.' });
+  }
+}
+
+export async function reauctionUnsold(req: AuthenticatedRequest, res: Response) {
+  try {
+    const result = await auctionEngine.reauctionUnsold();
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to reauction unsold players.' });
+  }
+}
+
+export async function resetAuction(req: AuthenticatedRequest, res: Response) {
+  try {
+    const result = await auctionEngine.resetAuction();
+    res.json(result);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to reset auction.' });
+  }
+}
+
+export async function getAuctionHistory(req: Request, res: Response) {
+  try {
+    const { teamId, playerId, limit = 100 } = req.query;
+
+    const where: any = {};
+    if (teamId) where.teamId = String(teamId);
+    if (playerId) where.playerId = String(playerId);
+
+    const bids = await prisma.bid.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: Number(limit),
+      include: {
+        team: true,
+        player: true,
+      },
+    });
+
+    const events = await prisma.auctionEvent.findMany({
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+    });
+
+    res.json({ bids, events });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to fetch auction history.' });
+  }
+}
+
+export async function getAuctionResults(req: Request, res: Response) {
+  try {
+    const soldPlayers = await prisma.auctionPlayer.findMany({
+      where: { status: 'SOLD' },
+      orderBy: { finalPrice: 'desc' },
+      include: {
+        player: true,
+        winningTeam: true,
+        bids: {
+          orderBy: { createdAt: 'desc' },
+        },
+      },
+    });
+
+    const unsoldPlayers = await prisma.auctionPlayer.findMany({
+      where: { status: 'UNSOLD' },
+      include: {
+        player: true,
+      },
+    });
+
+    res.json({
+      sold: soldPlayers,
+      unsold: unsoldPlayers,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to fetch auction results.' });
+  }
+}
