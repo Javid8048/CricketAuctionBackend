@@ -19,10 +19,11 @@ const io = new SocketIOServer(server, {
 
 setupSocketHandlers(io);
 
-server.listen(PORT, () => {
+server.listen(Number(PORT), '0.0.0.0', () => {
   console.log(`====================================================`);
   console.log(`🏏 CRICKET AUCTION ARENA - BACKEND SERVER RUNNING 🏏`);
-  console.log(`📡 HTTP Server: http://localhost:${PORT}`);
+  console.log(`📡 Local:   http://localhost:${PORT}`);
+  console.log(`🌐 Network: http://192.168.29.136:${PORT}`);
   console.log(`⚡ WebSocket Server: Ready for real-time auction bids`);
   console.log(`====================================================`);
 });
