@@ -211,3 +211,19 @@ export async function updateAuctionSettings(req: AuthenticatedRequest, res: Resp
   }
 }
 
+export async function clearAllTournamentData(req: AuthenticatedRequest, res: Response) {
+  try {
+    await prisma.bid.deleteMany();
+    await prisma.teamPlayer.deleteMany();
+    await prisma.auctionEvent.deleteMany();
+    await prisma.auctionPlayer.deleteMany();
+    await prisma.player.deleteMany();
+    await prisma.user.deleteMany({ where: { role: 'TEAM' } });
+    await prisma.team.deleteMany();
+    await auctionEngine.resetAuction();
+    res.json({ success: true, message: 'All franchises and players cleared successfully.' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to clear tournament data.' });
+  }
+}
+

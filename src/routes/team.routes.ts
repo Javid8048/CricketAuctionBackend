@@ -7,12 +7,19 @@ import {
   deleteTeam,
   assignIconPlayer,
   removeIconPlayer,
+  getFranchiseCredentials,
+  updateFranchiseCredentials,
 } from '../controllers/team.controller';
 import { authenticate, authorizeRole } from '../middleware/auth.middleware';
 
 const router = Router();
 
 router.get('/', getTeams);
+
+// Credentials endpoints (Admin only) - placed before /:id to avoid route collision
+router.get('/admin/credentials', authenticate, authorizeRole(['ADMIN']), getFranchiseCredentials);
+router.put('/:id/credentials', authenticate, authorizeRole(['ADMIN']), updateFranchiseCredentials);
+
 router.get('/:id', getTeamById);
 
 // Admin operations

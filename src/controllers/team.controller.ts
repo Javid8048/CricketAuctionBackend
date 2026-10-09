@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import bcrypt from 'bcryptjs';
 import { formatRupees } from '../utils/currency';
 
 const prisma = new PrismaClient();
@@ -104,6 +105,8 @@ export async function createTeam(req: Request, res: Response) {
     const data = req.body;
     const initialPurse = Number(data.totalPurse || 15000);
     const squadLimit = Number(data.maxSquadSize || 12);
+    const loginUsername = (data.loginUsername || data.username || '').trim();
+    const loginPassword = (data.loginPassword || data.password || '').trim();
 
     const team = await prisma.team.create({
       data: {
@@ -112,6 +115,8 @@ export async function createTeam(req: Request, res: Response) {
         ownerName: data.ownerName || null,
         phone: data.phone || null,
         address: data.address || null,
+        loginUsername: loginUsername || null,
+        loginPassword: loginPassword || null,
         primaryColor: data.primaryColor || '#3B82F6',
         secondaryColor: data.secondaryColor || '#1E40AF',
         logoText: data.shortName || data.name.substring(0, 2).toUpperCase(),
@@ -121,6 +126,44 @@ export async function createTeam(req: Request, res: Response) {
         maxOverseas: Number(data.maxOverseas || 4),
       },
     });
+
+    // Create User login if credentials were provided
+    if (loginUsername && loginPassword) {
+      const hashedPassword = await bcrypt.hash(loginPassword, 10);
+      const email = loginUsername.includes('@') ? loginUsername.toLowerCase() : `${loginUsername.toLowerCase()}@franchise.local`;
+
+      // Check if user already exists
+      const existingUser = await prisma.user.findFirst({
+        where: {
+          OR: [{ username: loginUsername }, { email: email }],
+        },
+      });
+
+      if (existingUser) {
+        await prisma.user.update({
+          where: { id: existingUser.id },
+          data: {
+            username: loginUsername,
+            email: email,
+            password: hashedPassword,
+            name: data.name,
+            role: 'TEAM',
+            teamId: team.id,
+          },
+        });
+      } else {
+        await prisma.user.create({
+          data: {
+            username: loginUsername,
+            email: email,
+            password: hashedPassword,
+            name: data.name,
+            role: 'TEAM',
+            teamId: team.id,
+          },
+        });
+      }
+    }
 
     res.status(201).json(team);
   } catch (error: any) {
@@ -139,9 +182,11 @@ export async function updateTeam(req: Request, res: Response) {
     }
 
     const newTotalPurse = data.totalPurse !== undefined ? Number(data.totalPurse) : existing.totalPurse;
-    // Calculate new remaining purse if total purse changed
     const purseDiff = newTotalPurse - existing.totalPurse;
     const newRemainingPurse = data.remainingPurse !== undefined ? Number(data.remainingPurse) : existing.remainingPurse + purseDiff;
+
+    const loginUsername = data.loginUsername !== undefined ? data.loginUsername : (data.username !== undefined ? data.username : existing.loginUsername);
+    const loginPassword = data.loginPassword !== undefined ? data.loginPassword : (data.password !== undefined ? data.password : existing.loginPassword);
 
     const team = await prisma.team.update({
       where: { id },
@@ -151,6 +196,8 @@ export async function updateTeam(req: Request, res: Response) {
         ownerName: data.ownerName !== undefined ? data.ownerName : existing.ownerName,
         phone: data.phone !== undefined ? data.phone : existing.phone,
         address: data.address !== undefined ? data.address : existing.address,
+        loginUsername: loginUsername || null,
+        loginPassword: loginPassword || null,
         primaryColor: data.primaryColor,
         secondaryColor: data.secondaryColor,
         logoText: data.logoText,
@@ -160,6 +207,42 @@ export async function updateTeam(req: Request, res: Response) {
         maxOverseas: data.maxOverseas !== undefined ? Number(data.maxOverseas) : existing.maxOverseas,
       },
     });
+
+    if (loginUsername && loginPassword) {
+      const hashedPassword = await bcrypt.hash(loginPassword, 10);
+      const email = loginUsername.includes('@') ? loginUsername.toLowerCase() : `${loginUsername.toLowerCase()}@franchise.local`;
+
+      const existingUser = await prisma.user.findFirst({
+        where: {
+          OR: [{ teamId: id }, { username: loginUsername }, { email: email }],
+        },
+      });
+
+      if (existingUser) {
+        await prisma.user.update({
+          where: { id: existingUser.id },
+          data: {
+            username: loginUsername,
+            email: email,
+            password: hashedPassword,
+            name: data.name || existingUser.name,
+            role: 'TEAM',
+            teamId: id,
+          },
+        });
+      } else {
+        await prisma.user.create({
+          data: {
+            username: loginUsername,
+            email: email,
+            password: hashedPassword,
+            name: team.name,
+            role: 'TEAM',
+            teamId: id,
+          },
+        });
+      }
+    }
 
     res.json(team);
   } catch (error: any) {
@@ -365,5 +448,102 @@ export async function removeIconPlayer(req: Request, res: Response) {
   } catch (error: any) {
     console.error('Remove Icon player error:', error);
     res.status(500).json({ error: error.message || 'Failed to remove Icon player.' });
+  }
+}
+
+/**
+ * Get credentials of all franchises (Admin only)
+ */
+export async function getFranchiseCredentials(req: Request, res: Response) {
+  try {
+    const teams = await prisma.team.findMany({
+      select: {
+        id: true,
+        name: true,
+        shortName: true,
+        ownerName: true,
+        phone: true,
+        primaryColor: true,
+        loginUsername: true,
+        loginPassword: true,
+        totalPurse: true,
+        remainingPurse: true,
+      },
+      orderBy: { name: 'asc' },
+    });
+    res.json(teams);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to fetch franchise credentials.' });
+  }
+}
+
+/**
+ * Update credentials of a franchise (Admin only)
+ */
+export async function updateFranchiseCredentials(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+    const { loginUsername, loginPassword } = req.body;
+
+    if (!loginUsername || !loginPassword) {
+      return res.status(400).json({ error: 'Username and password are required.' });
+    }
+
+    const team = await prisma.team.findUnique({ where: { id } });
+    if (!team) {
+      return res.status(404).json({ error: 'Franchise not found.' });
+    }
+
+    const hashedPassword = await bcrypt.hash(loginPassword.trim(), 10);
+    const email = loginUsername.includes('@')
+      ? loginUsername.toLowerCase().trim()
+      : `${loginUsername.toLowerCase().trim()}@franchise.local`;
+
+    await prisma.team.update({
+      where: { id },
+      data: {
+        loginUsername: loginUsername.trim(),
+        loginPassword: loginPassword.trim(),
+      },
+    });
+
+    const existingUser = await prisma.user.findFirst({
+      where: {
+        OR: [{ teamId: id }, { username: loginUsername.trim() }, { email }],
+      },
+    });
+
+    if (existingUser) {
+      await prisma.user.update({
+        where: { id: existingUser.id },
+        data: {
+          username: loginUsername.trim(),
+          email,
+          password: hashedPassword,
+          role: 'TEAM',
+          teamId: id,
+        },
+      });
+    } else {
+      await prisma.user.create({
+        data: {
+          username: loginUsername.trim(),
+          email,
+          password: hashedPassword,
+          name: team.name,
+          role: 'TEAM',
+          teamId: id,
+        },
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Credentials updated for ${team.name}.`,
+      loginUsername: loginUsername.trim(),
+      loginPassword: loginPassword.trim(),
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to update credentials.' });
   }
 }

@@ -13,8 +13,8 @@ export function createApp() {
     })
   );
 
-  app.use(express.json());
-  app.use(express.urlencoded({ extended: true }));
+  app.use(express.json({ limit: '25mb' }));
+  app.use(express.urlencoded({ limit: '25mb', extended: true }));
 
   // Health check
   app.get('/health', (req, res) => {
