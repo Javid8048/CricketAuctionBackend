@@ -21,13 +21,23 @@ export async function getPlayers(req: Request, res: Response) {
     if (status && status !== 'ALL') {
       where.status = String(status);
     }
+
     if (search) {
-      where.name = { contains: String(search) };
+      const searchStr = String(search).trim();
+      const sNoNum = parseInt(searchStr, 10);
+      if (!isNaN(sNoNum) && String(sNoNum) === searchStr) {
+        where.OR = [
+          { sNo: sNoNum },
+          { name: { contains: searchStr } },
+        ];
+      } else {
+        where.name = { contains: searchStr };
+      }
     }
 
     const players = await prisma.player.findMany({
       where,
-      orderBy: [{ status: 'asc' }, { basePrice: 'desc' }, { name: 'asc' }],
+      orderBy: [{ sNo: 'asc' }, { name: 'asc' }],
       include: {
         teamPlayer: {
           include: {
@@ -80,21 +90,43 @@ export async function getPlayerById(req: Request, res: Response) {
   }
 }
 
-export async function createPlayer(req: Request, res: Response) {
+/**
+ * Public registration endpoint for players via shared link (No Login Required)
+ */
+export async function registerPlayerPublic(req: Request, res: Response) {
   try {
     const data = req.body;
+
+    if (!data.name || !data.name.trim()) {
+      return res.status(400).json({ error: 'Player name is required.' });
+    }
+
+    // Auto-calculate next sequential S.No
+    const lastPlayer = await prisma.player.findFirst({
+      orderBy: { sNo: 'desc' },
+      select: { sNo: true },
+    });
+    const sNo = (lastPlayer?.sNo || 0) + 1;
+
+    const basePrice = Number(data.basePrice) > 0 ? Number(data.basePrice) : 100;
+    const age = Number(data.age) || (data.dob ? new Date().getFullYear() - new Date(data.dob).getFullYear() : 22);
+
     const player = await prisma.player.create({
       data: {
-        name: data.name,
-        profileImage: data.profileImage || 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80',
-        country: data.country,
-        isOverseas: data.country !== 'India',
-        age: Number(data.age),
-        role: data.role,
-        battingStyle: data.battingStyle,
-        bowlingStyle: data.bowlingStyle,
-        basePrice: Number(data.basePrice),
-        category: data.category,
+        sNo: sNo,
+        name: data.name.trim(),
+        profileImage: data.profileImage || 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=400&auto=format&fit=crop&q=80',
+        country: data.country || 'India',
+        isOverseas: data.country ? data.country !== 'India' : false,
+        age: age,
+        dob: data.dob || null,
+        place: data.place || null,
+        phone: data.phone || null,
+        role: data.role || 'All-Rounder',
+        battingStyle: data.battingStyle || 'Right-hand bat',
+        bowlingStyle: data.bowlingStyle || 'Right-arm medium',
+        basePrice: basePrice,
+        category: data.category || 'Local Talent',
         matches: Number(data.matches || 0),
         runs: Number(data.runs || 0),
         battingAvg: Number(data.battingAvg || 0),
@@ -108,7 +140,75 @@ export async function createPlayer(req: Request, res: Response) {
       },
     });
 
-    // Also add to the current auction if one exists
+    // Automatically enqueue to the current auction if one exists
+    const auction = await prisma.auction.findFirst({
+      orderBy: { createdAt: 'desc' },
+    });
+    if (auction) {
+      const count = await prisma.auctionPlayer.count({ where: { auctionId: auction.id } });
+      await prisma.auctionPlayer.create({
+        data: {
+          auctionId: auction.id,
+          playerId: player.id,
+          status: 'PENDING',
+          orderIndex: count + 1,
+          basePrice: player.basePrice,
+        },
+      });
+    }
+
+    res.status(201).json({
+      success: true,
+      message: `Registration successful! Your S.No is #${sNo}`,
+      player,
+    });
+  } catch (error: any) {
+    console.error('Public player registration error:', error);
+    res.status(500).json({ error: error.message || 'Player registration failed.' });
+  }
+}
+
+export async function createPlayer(req: Request, res: Response) {
+  try {
+    const data = req.body;
+
+    const lastPlayer = await prisma.player.findFirst({
+      orderBy: { sNo: 'desc' },
+      select: { sNo: true },
+    });
+    const sNo = data.sNo ? Number(data.sNo) : (lastPlayer?.sNo || 0) + 1;
+
+    const basePrice = Number(data.basePrice) > 0 ? Number(data.basePrice) : 100;
+
+    const player = await prisma.player.create({
+      data: {
+        sNo: sNo,
+        name: data.name,
+        profileImage: data.profileImage || 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=400&auto=format&fit=crop&q=80',
+        country: data.country || 'India',
+        isOverseas: data.country ? data.country !== 'India' : false,
+        age: Number(data.age || 24),
+        dob: data.dob || null,
+        place: data.place || null,
+        phone: data.phone || null,
+        role: data.role || 'Batter',
+        battingStyle: data.battingStyle || 'Right-hand bat',
+        bowlingStyle: data.bowlingStyle || 'Right-arm medium',
+        basePrice: basePrice,
+        category: data.category || 'General',
+        matches: Number(data.matches || 0),
+        runs: Number(data.runs || 0),
+        battingAvg: Number(data.battingAvg || 0),
+        strikeRate: Number(data.strikeRate || 0),
+        highestScore: Number(data.highestScore || 0),
+        wickets: Number(data.wickets || 0),
+        economy: Number(data.economy || 0),
+        bowlingAvg: Number(data.bowlingAvg || 0),
+        bestBowling: data.bestBowling || '0/0',
+        status: 'UPCOMING',
+      },
+    });
+
     const auction = await prisma.auction.findFirst({
       orderBy: { createdAt: 'desc' },
     });
@@ -158,8 +258,8 @@ export async function deletePlayer(req: Request, res: Response) {
       where: { id },
     });
 
-    res.json({ message: 'Player deleted successfully.' });
+    res.json({ message: 'Player removed successfully.' });
   } catch (error: any) {
-    res.status(500).json({ error: error.message || 'Failed to delete player.' });
+    res.status(500).json({ error: error.message || 'Failed to remove player.' });
   }
 }

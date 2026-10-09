@@ -8,24 +8,33 @@ const prisma = new PrismaClient();
 
 export async function login(req: Request, res: Response) {
   try {
-    const { email, password } = req.body;
+    const { email, username, password } = req.body;
+    const identifier = (email || username || '').trim();
 
-    if (!email || !password) {
-      return res.status(400).json({ error: 'Email and password are required.' });
+    if (!identifier || !password) {
+      return res.status(400).json({ error: 'Username/Email and password are required.' });
     }
 
-    const user = await prisma.user.findUnique({
-      where: { email: email.toLowerCase().trim() },
+    // Match by email, username, or case-insensitive matching
+    const user = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: identifier.toLowerCase() },
+          { email: identifier },
+          { username: identifier },
+          { username: identifier.toLowerCase() },
+        ],
+      },
       include: { team: true },
     });
 
     if (!user) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
+      return res.status(401).json({ error: 'Invalid username/email or password.' });
     }
 
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
-      return res.status(401).json({ error: 'Invalid email or password.' });
+      return res.status(401).json({ error: 'Invalid username/email or password.' });
     }
 
     const token = generateToken({
@@ -41,6 +50,7 @@ export async function login(req: Request, res: Response) {
       user: {
         id: user.id,
         email: user.email,
+        username: user.username,
         name: user.name,
         role: user.role,
         teamId: user.teamId,
@@ -55,24 +65,30 @@ export async function login(req: Request, res: Response) {
 
 export async function register(req: Request, res: Response) {
   try {
-    const { email, password, name, role = 'SPECTATOR', teamId } = req.body;
+    const { email, username, password, name, role = 'SPECTATOR', teamId } = req.body;
 
     if (!email || !password || !name) {
       return res.status(400).json({ error: 'Email, password, and name are required.' });
     }
 
-    const existing = await prisma.user.findUnique({
-      where: { email: email.toLowerCase().trim() },
+    const existing = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: email.toLowerCase().trim() },
+          ...(username ? [{ username: username.trim() }] : []),
+        ],
+      },
     });
 
     if (existing) {
-      return res.status(400).json({ error: 'An account with this email already exists.' });
+      return res.status(400).json({ error: 'An account with this username or email already exists.' });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
     const user = await prisma.user.create({
       data: {
         email: email.toLowerCase().trim(),
+        username: username?.trim() || null,
         password: hashedPassword,
         name,
         role,
@@ -94,6 +110,7 @@ export async function register(req: Request, res: Response) {
       user: {
         id: user.id,
         email: user.email,
+        username: user.username,
         name: user.name,
         role: user.role,
         teamId: user.teamId,
@@ -103,6 +120,45 @@ export async function register(req: Request, res: Response) {
   } catch (error: any) {
     console.error('Registration error:', error);
     res.status(500).json({ error: error.message || 'Registration failed.' });
+  }
+}
+
+export async function resetPassword(req: AuthenticatedRequest, res: Response) {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Not authenticated.' });
+    }
+
+    const { newPassword, currentPassword } = req.body;
+    if (!newPassword || newPassword.length < 4) {
+      return res.status(400).json({ error: 'New password must be at least 4 characters.' });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.userId },
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    // If currentPassword is provided, verify it
+    if (currentPassword) {
+      const isMatch = await bcrypt.compare(currentPassword, user.password);
+      if (!isMatch) {
+        return res.status(400).json({ error: 'Current password is incorrect.' });
+      }
+    }
+
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { password: hashedPassword },
+    });
+
+    res.json({ message: 'Password updated successfully!' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to reset password.' });
   }
 }
 
@@ -125,6 +181,7 @@ export async function getCurrentUser(req: AuthenticatedRequest, res: Response) {
       user: {
         id: user.id,
         email: user.email,
+        username: user.username,
         name: user.name,
         role: user.role,
         teamId: user.teamId,

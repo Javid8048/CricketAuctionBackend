@@ -11,6 +11,7 @@ generator client {
 model User {
   id        String   @id @default(uuid())
   email     String   @unique
+  username  String?  @unique
   password  String
   name      String
   role      String   @default("TEAM") // ADMIN, TEAM, SPECTATOR
@@ -21,36 +22,45 @@ model User {
 }
 
 model Team {
-  id              String       @id @default(uuid())
-  name            String       @unique
+  id              String          @id @default(uuid())
+  name            String          @unique
   shortName       String
-  primaryColor    String       @default("#3B82F6")
-  secondaryColor  String       @default("#1E40AF")
+  ownerName       String?
+  phone           String?
+  address         String?
+  primaryColor    String          @default("#3B82F6")
+  secondaryColor  String          @default("#1E40AF")
   logoText        String
-  totalPurse      Float        @default(1000000000) // ₹100 Cr in Rupee value (100,00,00,000)
-  remainingPurse  Float        @default(1000000000)
-  maxSquadSize    Int          @default(25)
-  maxOverseas     Int          @default(8)
+  totalPurse      Float           @default(15000) // ₹15,000 standard tournament purse
+  remainingPurse  Float           @default(15000)
+  maxSquadSize    Int             @default(12)    // 12 players limit
+  maxOverseas     Int             @default(8)
   user            User?
   squad           TeamPlayer[]
   bids            Bid[]
   wonAuctions     AuctionPlayer[] @relation("WinningTeam")
-  createdAt       DateTime     @default(now())
-  updatedAt       DateTime     @updatedAt
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
 }
 
 model Player {
   id             String          @id @default(uuid())
+  sNo            Int             @default(0) // Serial Number (e.g. 1, 2, 3...)
   name           String
   profileImage   String
-  country        String
+  country        String          @default("India")
   isOverseas     Boolean         @default(false)
-  age            Int
+  age            Int             @default(24)
+  dob            String?         // Date of birth
+  place          String?         // City / Village / District
+  phone          String?         // Phone / WhatsApp number
   role           String          // Batter, Bowler, All-Rounder, Wicketkeeper
-  battingStyle   String          // Right-hand bat, Left-hand bat
-  bowlingStyle   String          // Right-arm fast, Right-arm offbreak, Left-arm orthodox, etc.
-  basePrice      Float           // In Rupee value
-  category       String          // Marquee, Capped, Uncapped, Emerging
+  battingStyle   String          @default("Right-hand bat")
+  bowlingStyle   String          @default("Right-arm medium")
+  basePrice      Float           @default(100) // Starting bid: ₹100
+  category       String          @default("General")
+  isIcon         Boolean         @default(false)
+  iconPrice      Float?          // ₹2,500 default when assigned
   matches        Int             @default(0)
   runs           Int             @default(0)
   battingAvg     Float           @default(0)
@@ -67,14 +77,22 @@ model Player {
   bids           Bid[]
   createdAt      DateTime        @default(now())
   updatedAt      DateTime        @updatedAt
+
+  @@index([sNo])
 }
 
 model Auction {
   id                String          @id @default(uuid())
-  name              String          @default("Mega Auction 2026")
+  name              String          @default("Premier Cricket Auction 2026")
   status            String          @default("IDLE") // IDLE, ACTIVE, PAUSED, COMPLETED
   currentRound      Int             @default(1)
   defaultTimerSec   Int             @default(10)
+  autoSell          Boolean         @default(true)  // Auto-sell when timer reaches 0
+  timerEnabled      Boolean         @default(true)  // Enable/disable bid timer
+  defaultPurse      Float           @default(15000)
+  defaultSquadLimit Int             @default(12)
+  iconPlayerPrice   Float           @default(2500)
+  defaultBasePrice  Float           @default(100)
   activePlayerId    String?
   activePlayerPrice Float?
   highestBidTeamId  String?
@@ -136,6 +154,7 @@ model TeamPlayer {
   playerId  String   @unique
   player    Player   @relation(fields: [playerId], references: [id], onDelete: Cascade)
   price     Float
+  isIcon    Boolean  @default(false)
   acquiredAt DateTime @default(now())
 
   @@index([teamId])

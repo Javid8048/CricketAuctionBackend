@@ -15,6 +15,7 @@ import {
   resetAuction,
   getAuctionHistory,
   getAuctionResults,
+  updateAuctionSettings,
 } from '../controllers/auction.controller';
 import { getDashboardStats } from '../controllers/stats.controller';
 import { authenticate, authorizeRole } from '../middleware/auth.middleware';
@@ -42,5 +43,6 @@ router.post('/unsold', authenticate, authorizeRole(['ADMIN']), markUnsold);
 router.post('/skip', authenticate, authorizeRole(['ADMIN']), skipPlayer);
 router.post('/reauction', authenticate, authorizeRole(['ADMIN']), reauctionUnsold);
 router.post('/reset', authenticate, authorizeRole(['ADMIN']), resetAuction);
+router.post('/settings', authenticate, authorizeRole(['ADMIN']), updateAuctionSettings);
 
 export default router;

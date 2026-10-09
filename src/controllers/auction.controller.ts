@@ -200,3 +200,14 @@ export async function getAuctionResults(req: Request, res: Response) {
     res.status(500).json({ error: error.message || 'Failed to fetch auction results.' });
   }
 }
+
+export async function updateAuctionSettings(req: AuthenticatedRequest, res: Response) {
+  try {
+    const settings = req.body;
+    const state = await auctionEngine.updateSettings(settings);
+    res.json(state);
+  } catch (error: any) {
+    res.status(400).json({ error: error.message || 'Failed to update settings.' });
+  }
+}
+

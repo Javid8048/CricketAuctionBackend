@@ -439,16 +439,13 @@ export class AuctionEngine {
         }
       } else {
         // Subsequent bid
-        targetBid = customAmount ? customAmount : currentHighest + minInc;
-        if (targetBid <= currentHighest) {
-          throw new Error(`Bid must be higher than current bid of ${formatRupees(currentHighest)}.`);
-        }
-        if (targetBid < currentHighest + minInc) {
-          throw new Error(
-            `Bid must follow minimum increment of ${formatRupees(minInc)}. Next minimum bid is ${formatRupees(
-              currentHighest + minInc
-            )}.`
-          );
+        if (customAmount) {
+          targetBid = customAmount;
+          if (targetBid <= currentHighest) {
+            throw new Error(`Bid must be higher than current bid of ${formatRupees(currentHighest)}.`);
+          }
+        } else {
+          targetBid = currentHighest + minInc;
         }
       }
 
@@ -514,8 +511,12 @@ export class AuctionEngine {
         return { newBid, updatedAuction };
       });
 
-      // Reset timer to default (10 seconds) on every valid bid
-      this.secondsLeft = auction.defaultTimerSec || 10;
+      // Reset timer to default on every valid bid if timer is enabled
+      const currentAuction = await this.prisma.auction.findFirst({ orderBy: { createdAt: 'desc' } });
+      if (currentAuction && currentAuction.timerEnabled !== false) {
+        this.secondsLeft = currentAuction.defaultTimerSec || 10;
+        this.startTimer();
+      }
 
       // Broadcast bid event
       const state = await this.getAuctionState();
@@ -851,11 +852,70 @@ export class AuctionEngine {
   }
 
   /**
-   * Server-controlled 10-second timer
+   * Update Tournament and Auction Settings (Admin Only)
    */
-  private startTimer() {
+  public async updateSettings(settings: {
+    autoSell?: boolean;
+    timerEnabled?: boolean;
+    defaultTimerSec?: number;
+    defaultPurse?: number;
+    defaultSquadLimit?: number;
+    iconPlayerPrice?: number;
+    defaultBasePrice?: number;
+  }) {
+    const auction = await this.prisma.auction.findFirst({
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!auction) throw new Error('No auction found');
+
+    const updated = await this.prisma.auction.update({
+      where: { id: auction.id },
+      data: {
+        autoSell: settings.autoSell !== undefined ? Boolean(settings.autoSell) : auction.autoSell,
+        timerEnabled: settings.timerEnabled !== undefined ? Boolean(settings.timerEnabled) : auction.timerEnabled,
+        defaultTimerSec: settings.defaultTimerSec ? Number(settings.defaultTimerSec) : auction.defaultTimerSec,
+        defaultPurse: settings.defaultPurse ? Number(settings.defaultPurse) : auction.defaultPurse,
+        defaultSquadLimit: settings.defaultSquadLimit ? Number(settings.defaultSquadLimit) : auction.defaultSquadLimit,
+        iconPlayerPrice: settings.iconPlayerPrice ? Number(settings.iconPlayerPrice) : auction.iconPlayerPrice,
+        defaultBasePrice: settings.defaultBasePrice ? Number(settings.defaultBasePrice) : auction.defaultBasePrice,
+      },
+    });
+
+    if (settings.defaultTimerSec) {
+      this.secondsLeft = Number(settings.defaultTimerSec);
+    }
+
+    if (settings.timerEnabled === false) {
+      this.stopTimer();
+    }
+
+    const state = await this.getAuctionState();
+    this.broadcast('auction:settings_updated', state);
+    return state;
+  }
+
+  /**
+   * Server-controlled bid timer with autoSell toggle and enable/disable
+   */
+  private async startTimer() {
     if (this.timerInterval) {
       clearInterval(this.timerInterval);
+      this.timerInterval = null;
+    }
+
+    const auction = await this.prisma.auction.findFirst({
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!auction) return;
+
+    if (auction.timerEnabled === false) {
+      this.broadcast('auction:timer', {
+        secondsLeft: null,
+        timerEnabled: false,
+        message: 'Manual Auction Mode (Timer Disabled)',
+      });
+      return;
     }
 
     this.timerInterval = setInterval(async () => {
@@ -864,6 +924,7 @@ export class AuctionEngine {
       // Broadcast timer tick
       this.broadcast('auction:timer', {
         secondsLeft: this.secondsLeft,
+        timerEnabled: true,
         warning: this.secondsLeft <= 5 && this.secondsLeft > 0,
         urgent: this.secondsLeft <= 3 && this.secondsLeft > 0,
       });
@@ -872,17 +933,26 @@ export class AuctionEngine {
         this.stopTimer();
 
         // Check if there is a highest bidder
-        const auction = await this.prisma.auction.findFirst({
+        const currentAuction = await this.prisma.auction.findFirst({
           orderBy: { createdAt: 'desc' },
         });
 
-        if (auction && auction.activePlayerId) {
-          if (auction.highestBidTeamId) {
-            console.log(`[Timer expired]: Selling player ${auction.activePlayerId} to ${auction.highestBidTeamId}`);
-            await this.sellPlayer();
+        if (currentAuction && currentAuction.activePlayerId) {
+          if (currentAuction.autoSell) {
+            if (currentAuction.highestBidTeamId) {
+              console.log(`[Timer expired - Auto-Sell]: Selling player ${currentAuction.activePlayerId} to ${currentAuction.highestBidTeamId}`);
+              await this.sellPlayer();
+            } else {
+              console.log(`[Timer expired - Auto-Unsold]: No bids placed, player ${currentAuction.activePlayerId} is UNSOLD`);
+              await this.markUnsold();
+            }
           } else {
-            console.log(`[Timer expired]: No bids placed, player ${auction.activePlayerId} is UNSOLD`);
-            await this.markUnsold();
+            console.log(`[Timer expired - Manual Mode]: Awaiting Admin confirmation to sell player ${currentAuction.activePlayerId}`);
+            this.broadcast('auction:timer_ended_manual', {
+              message: 'Timer reached 0! Awaiting Admin confirmation to Sell or Mark Unsold.',
+              highestBidTeamId: currentAuction.highestBidTeamId,
+              activePlayerPrice: currentAuction.activePlayerPrice,
+            });
           }
         }
       }

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import { PrismaClient } from '@prisma/client';
+import { formatRupees } from '../utils/currency';
 
 const prisma = new PrismaClient();
 
@@ -22,11 +23,13 @@ export async function getTeams(req: Request, res: Response) {
       const bowlers = t.squad.filter((sp) => sp.player.role === 'Bowler').length;
       const allRounders = t.squad.filter((sp) => sp.player.role === 'All-Rounder').length;
       const wicketkeepers = t.squad.filter((sp) => sp.player.role === 'Wicketkeeper').length;
+      const iconPlayersCount = t.squad.filter((sp) => sp.isIcon || sp.player.isIcon).length;
       const totalSpent = t.totalPurse - t.remainingPurse;
 
       return {
         ...t,
         squadSize: t.squad.length,
+        iconPlayersCount,
         overseasCount,
         batters,
         bowlers,
@@ -73,6 +76,7 @@ export async function getTeamById(req: Request, res: Response) {
     const bowlers = team.squad.filter((sp) => sp.player.role === 'Bowler').length;
     const allRounders = team.squad.filter((sp) => sp.player.role === 'All-Rounder').length;
     const wicketkeepers = team.squad.filter((sp) => sp.player.role === 'Wicketkeeper').length;
+    const iconPlayersCount = team.squad.filter((sp) => sp.isIcon || sp.player.isIcon).length;
     const totalSpent = team.totalPurse - team.remainingPurse;
     const avgPlayerPrice = team.squad.length > 0 ? totalSpent / team.squad.length : 0;
     const highestPurchase = team.squad.reduce((max, curr) => (curr.price > max ? curr.price : max), 0);
@@ -80,6 +84,7 @@ export async function getTeamById(req: Request, res: Response) {
     res.json({
       ...team,
       squadSize: team.squad.length,
+      iconPlayersCount,
       overseasCount,
       batters,
       bowlers,
@@ -97,17 +102,23 @@ export async function getTeamById(req: Request, res: Response) {
 export async function createTeam(req: Request, res: Response) {
   try {
     const data = req.body;
+    const initialPurse = Number(data.totalPurse || 15000);
+    const squadLimit = Number(data.maxSquadSize || 12);
+
     const team = await prisma.team.create({
       data: {
         name: data.name,
-        shortName: data.shortName,
+        shortName: data.shortName || data.name.substring(0, 3).toUpperCase(),
+        ownerName: data.ownerName || null,
+        phone: data.phone || null,
+        address: data.address || null,
         primaryColor: data.primaryColor || '#3B82F6',
         secondaryColor: data.secondaryColor || '#1E40AF',
         logoText: data.shortName || data.name.substring(0, 2).toUpperCase(),
-        totalPurse: Number(data.totalPurse || 1000000000),
-        remainingPurse: Number(data.totalPurse || 1000000000),
-        maxSquadSize: Number(data.maxSquadSize || 25),
-        maxOverseas: Number(data.maxOverseas || 8),
+        totalPurse: initialPurse,
+        remainingPurse: initialPurse,
+        maxSquadSize: squadLimit,
+        maxOverseas: Number(data.maxOverseas || 4),
       },
     });
 
@@ -122,23 +133,237 @@ export async function updateTeam(req: Request, res: Response) {
     const { id } = req.params;
     const data = req.body;
 
+    const existing = await prisma.team.findUnique({ where: { id } });
+    if (!existing) {
+      return res.status(404).json({ error: 'Team not found.' });
+    }
+
+    const newTotalPurse = data.totalPurse !== undefined ? Number(data.totalPurse) : existing.totalPurse;
+    // Calculate new remaining purse if total purse changed
+    const purseDiff = newTotalPurse - existing.totalPurse;
+    const newRemainingPurse = data.remainingPurse !== undefined ? Number(data.remainingPurse) : existing.remainingPurse + purseDiff;
+
     const team = await prisma.team.update({
       where: { id },
       data: {
         name: data.name,
         shortName: data.shortName,
+        ownerName: data.ownerName !== undefined ? data.ownerName : existing.ownerName,
+        phone: data.phone !== undefined ? data.phone : existing.phone,
+        address: data.address !== undefined ? data.address : existing.address,
         primaryColor: data.primaryColor,
         secondaryColor: data.secondaryColor,
         logoText: data.logoText,
-        totalPurse: data.totalPurse ? Number(data.totalPurse) : undefined,
-        remainingPurse: data.remainingPurse ? Number(data.remainingPurse) : undefined,
-        maxSquadSize: data.maxSquadSize ? Number(data.maxSquadSize) : undefined,
-        maxOverseas: data.maxOverseas ? Number(data.maxOverseas) : undefined,
+        totalPurse: newTotalPurse,
+        remainingPurse: newRemainingPurse,
+        maxSquadSize: data.maxSquadSize !== undefined ? Number(data.maxSquadSize) : existing.maxSquadSize,
+        maxOverseas: data.maxOverseas !== undefined ? Number(data.maxOverseas) : existing.maxOverseas,
       },
     });
 
     res.json(team);
   } catch (error: any) {
     res.status(500).json({ error: error.message || 'Failed to update team.' });
+  }
+}
+
+export async function deleteTeam(req: Request, res: Response) {
+  try {
+    const { id } = req.params;
+
+    await prisma.team.delete({
+      where: { id },
+    });
+
+    res.json({ message: 'Team deleted successfully.' });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message || 'Failed to delete team.' });
+  }
+}
+
+/**
+ * Assign an Icon Player to a team before bidding starts
+ * Limit: 2 Icon Players per team, deduction default: ₹2,500 (customizable by Admin)
+ */
+export async function assignIconPlayer(req: Request, res: Response) {
+  try {
+    const { id: teamId } = req.params;
+    const { playerId, iconPrice = 2500 } = req.body;
+
+    const deductionAmount = Number(iconPrice) > 0 ? Number(iconPrice) : 2500;
+
+    const team = await prisma.team.findUnique({
+      where: { id: teamId },
+      include: { squad: { include: { player: true } } },
+    });
+
+    if (!team) {
+      return res.status(404).json({ error: 'Team not found.' });
+    }
+
+    const player = await prisma.player.findUnique({
+      where: { id: playerId },
+    });
+
+    if (!player) {
+      return res.status(404).json({ error: 'Player not found.' });
+    }
+
+    if (player.status !== 'UPCOMING') {
+      return res.status(400).json({ error: `Player is already ${player.status.toLowerCase()} and cannot be selected as an Icon player.` });
+    }
+
+    // 1. Max 2 Icon players rule
+    const currentIconCount = team.squad.filter((sp) => sp.isIcon || sp.player.isIcon).length;
+    if (currentIconCount >= 2) {
+      return res.status(400).json({ error: `Team ${team.name} already has the maximum of 2 Icon players.` });
+    }
+
+    // 2. Max squad limit rule
+    if (team.squad.length >= team.maxSquadSize) {
+      return res.status(400).json({ error: `Team squad limit of ${team.maxSquadSize} members is reached.` });
+    }
+
+    // 3. Sufficient purse rule
+    if (team.remainingPurse < deductionAmount) {
+      return res.status(400).json({
+        error: `Insufficient purse! Team has ${formatRupees(team.remainingPurse)}, required ${formatRupees(deductionAmount)} for Icon Player.`,
+      });
+    }
+
+    const auction = await prisma.auction.findFirst({ orderBy: { createdAt: 'desc' } });
+
+    // Execute atomic transaction
+    await prisma.$transaction(async (tx) => {
+      // Deduct purse
+      await tx.team.update({
+        where: { id: teamId },
+        data: { remainingPurse: { decrement: deductionAmount } },
+      });
+
+      // Add to squad
+      await tx.teamPlayer.create({
+        data: {
+          teamId,
+          playerId,
+          price: deductionAmount,
+          isIcon: true,
+        },
+      });
+
+      // Mark player as sold icon
+      await tx.player.update({
+        where: { id: playerId },
+        data: {
+          status: 'SOLD',
+          isIcon: true,
+          iconPrice: deductionAmount,
+          currentPrice: deductionAmount,
+        },
+      });
+
+      // Update auction player entry
+      if (auction) {
+        await tx.auctionPlayer.updateMany({
+          where: { auctionId: auction.id, playerId },
+          data: {
+            status: 'SOLD',
+            winningTeamId: teamId,
+            finalPrice: deductionAmount,
+            soldAt: new Date(),
+          },
+        });
+
+        await tx.auctionEvent.create({
+          data: {
+            auctionId: auction.id,
+            type: 'SOLD',
+            message: `ICON PLAYER! ${player.name} (S.No #${player.sNo}) assigned to ${team.name} for ${formatRupees(deductionAmount)}.`,
+            metadata: JSON.stringify({
+              playerId: player.id,
+              playerName: player.name,
+              teamId: team.id,
+              teamName: team.name,
+              amount: deductionAmount,
+              isIcon: true,
+            }),
+          },
+        });
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `${player.name} assigned as Icon player for ${team.name} (-${formatRupees(deductionAmount)} deducted from purse).`,
+    });
+  } catch (error: any) {
+    console.error('Assign Icon player error:', error);
+    res.status(500).json({ error: error.message || 'Failed to assign Icon player.' });
+  }
+}
+
+/**
+ * Remove an Icon Player from a team (Refunds purse back)
+ */
+export async function removeIconPlayer(req: Request, res: Response) {
+  try {
+    const { id: teamId } = req.params;
+    const { playerId } = req.body;
+
+    const teamPlayer = await prisma.teamPlayer.findFirst({
+      where: { teamId, playerId },
+      include: { player: true, team: true },
+    });
+
+    if (!teamPlayer) {
+      return res.status(404).json({ error: 'Player is not in this team squad.' });
+    }
+
+    const refundPrice = teamPlayer.price;
+    const auction = await prisma.auction.findFirst({ orderBy: { createdAt: 'desc' } });
+
+    await prisma.$transaction(async (tx) => {
+      // Refund purse
+      await tx.team.update({
+        where: { id: teamId },
+        data: { remainingPurse: { increment: refundPrice } },
+      });
+
+      // Remove from squad
+      await tx.teamPlayer.delete({
+        where: { id: teamPlayer.id },
+      });
+
+      // Reset player to upcoming
+      await tx.player.update({
+        where: { id: playerId },
+        data: {
+          status: 'UPCOMING',
+          isIcon: false,
+          iconPrice: null,
+          currentPrice: null,
+        },
+      });
+
+      if (auction) {
+        await tx.auctionPlayer.updateMany({
+          where: { auctionId: auction.id, playerId },
+          data: {
+            status: 'PENDING',
+            winningTeamId: null,
+            finalPrice: null,
+            soldAt: null,
+          },
+        });
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `${teamPlayer.player.name} removed from ${teamPlayer.team.name} (+${formatRupees(refundPrice)} refunded to purse).`,
+    });
+  } catch (error: any) {
+    console.error('Remove Icon player error:', error);
+    res.status(500).json({ error: error.message || 'Failed to remove Icon player.' });
   }
 }
